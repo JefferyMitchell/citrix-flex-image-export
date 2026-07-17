@@ -17,7 +17,7 @@ echo "Dest     : ${DEST_STORAGE}/${CONTAINER}"
 # ── Download AzCopy for Linux ──────────────────────────────────────────────────
 echo ""
 echo "Downloading AzCopy v10..."
-curl -sL https://aka.ms/downloadazcopy-v10-linux -o /tmp/azcopy.tar.gz
+wget -qO /tmp/azcopy.tar.gz https://aka.ms/downloadazcopy-v10-linux
 tar -xzf /tmp/azcopy.tar.gz -C /tmp
 AZCOPY=$(find /tmp -name "azcopy" -type f | head -1)
 chmod +x "$AZCOPY"
