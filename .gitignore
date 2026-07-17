@@ -1,0 +1,9 @@
+# Terraform (if any local testing)
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Local secrets
+*.env
+*.secret
