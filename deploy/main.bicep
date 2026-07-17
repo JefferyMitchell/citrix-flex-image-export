@@ -38,10 +38,10 @@ param destStorageAccountResourceGroup string
 @description('Container in the destination storage account. Must already exist (default: vhd-output).')
 param outputContainer string = 'vhd-output'
 
-@description('Number of days the output SAS tokens remain valid. Re-run this deployment to renew.')
+@description('Number of hours the output SAS tokens remain valid. Re-run this deployment to renew.')
 @minValue(1)
-@maxValue(365)
-param sasDays int = 14
+@maxValue(8760)
+param sasHours int = 1
 
 @description('Azure region for the deployment script runner. Must support Azure Container Instances.')
 param location string = resourceGroup().location
@@ -115,7 +115,7 @@ resource exportScript 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
       { name: 'DEST_STORAGE_ACCOUNT',   value: destStorageAccountName }
       { name: 'DEST_RESOURCE_GROUP',    value: destStorageAccountResourceGroup }
       { name: 'OUTPUT_CONTAINER',       value: outputContainer }
-      { name: 'SAS_DAYS',               value: string(sasDays) }
+      { name: 'SAS_HOURS',              value: string(sasHours) }
     ]
     scriptContent: loadTextContent('export-image.sh')
   }

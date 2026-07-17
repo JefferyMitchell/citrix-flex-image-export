@@ -8,7 +8,7 @@ IMAGE_VER="${IMAGE_VERSION}"
 DEST_STORAGE="${DEST_STORAGE_ACCOUNT}"
 DEST_RG="${DEST_RESOURCE_GROUP}"
 CONTAINER="${OUTPUT_CONTAINER}"
-SAS_DAYS="${SAS_DAYS:-14}"
+SAS_HOURS="${SAS_HOURS:-1}"
 
 echo "=== Citrix Flex Image Export ==="
 echo "Gallery  : ${GALLERY_NAME} / ${IMAGE_DEF} @ ${IMAGE_VER}"
@@ -150,10 +150,10 @@ fi
 
 # ── Generate read SAS tokens (user delegation — no account key needed) ─────────
 echo ""
-echo "Generating read SAS tokens (${SAS_DAYS}-day expiry)..."
+echo "Generating read SAS tokens (${SAS_HOURS}-hour expiry)..."
 
 # User delegation SAS requires Storage Blob Delegator role on the storage account
-EXPIRY=$(date -u -d "+${SAS_DAYS} days" '+%Y-%m-%dT%H:%MZ')
+EXPIRY=$(date -u -d "+${SAS_HOURS} hours" '+%Y-%m-%dT%H:%MZ')
 
 az account set --subscription "$SUBSCRIPTION_ID" 2>/dev/null
 

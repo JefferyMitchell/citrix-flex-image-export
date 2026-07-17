@@ -72,9 +72,9 @@ Catalog creation provisions the Azure VMs, installs Citrix agents, and makes mac
 
 ## SAS token expiry
 
-The SAS tokens embedded in `vhdUri` and `guestDiskUri` expire after the number of days you configured (default 14). Citrix reads the VHD URI at catalog creation time. If the import wizard cannot read the VHD URI, the SAS may have expired.
+The SAS tokens embedded in `vhdUri` and `guestDiskUri` expire **1 hour** after the deployment completes. Complete the Citrix Cloud import wizard before then.
 
-To renew: re-run the [citrix-flex-image-export deployment](https://github.com/JefferyMitchell/citrix-flex-image-export) with the same parameters and fresh SAS URIs will be generated in the outputs.
+To renew: re-run the [citrix-flex-image-export deployment](https://github.com/JefferyMitchell/citrix-flex-image-export) with the same parameters — fresh 1-hour SAS URIs will be in the Outputs tab.
 
 ---
 
