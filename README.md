@@ -51,7 +51,7 @@ Before clicking Deploy:
 | **Dest Storage Account Name** | Storage account to receive the VHD and VMGS blobs | `mystorageaccount` |
 | **Dest Storage Account Resource Group** | Resource group of that storage account | `rg-citrix-images` |
 | **Output Container** | Container name in the storage account *(default: vhd-output)* | `vhd-output` |
-| **SAS Days** | How many days the output SAS tokens remain valid *(default: 14)* | `14` |
+| **SAS Hours** | How many hours the output SAS tokens remain valid *(default: 1)* | `1` |
 | **Location** | Azure region for the export container *(defaults to deployment RG region)* | `eastus` |
 
 > All parameters are within the **same Azure subscription**. Cross-subscription scenarios are not supported in this version.
@@ -68,9 +68,9 @@ When the deployment completes (~10–15 minutes), open the deployment and click 
 | `guestDiskUri` | Paste into **Guest Disk URI** in Citrix Cloud *(Trusted Launch images only)* |
 | `secureBootEnabled` | `true` for Trusted Launch images, `false` otherwise |
 | `vTPMEnabled` | `true` for Trusted Launch images, `false` otherwise |
-| `sasExpiry` | When to re-run this deployment to renew the SAS tokens |
+| `sasExpiry` | When the SAS tokens expire (1 hour from deployment) |
 
-> **SAS tokens expire.** The default is 14 days. If you need to import the image in Citrix Cloud after expiry, re-run this deployment — it will re-copy the blobs and generate fresh SAS tokens.
+> **SAS tokens expire after 1 hour.** Complete the Citrix Cloud import before then. If the tokens expire, re-run this deployment to generate fresh SAS tokens.
 
 ---
 
@@ -94,11 +94,9 @@ See [docs/import-to-citrix.md](docs/import-to-citrix.md) for step-by-step screen
 
 ## Renewing SAS tokens
 
-SAS tokens are time-limited. To generate fresh tokens after expiry (without re-copying the blobs):
+SAS tokens expire after 1 hour. To generate fresh tokens after expiry:
 
-**Re-run the same deployment** — fill in the same parameters and click Create again. The deployment detects that the blobs already exist and skips the copy, then generates new SAS tokens. The deployment completes in ~2 minutes instead of 10–15.
-
-> **Note:** If the blobs need to be re-copied (e.g. you deleted them), the full 10–15 minute run applies.
+**Re-run the same deployment** — fill in the same parameters and click Create again. Fresh 1-hour SAS tokens are written to the Outputs tab when the deployment completes.
 
 ---
 
