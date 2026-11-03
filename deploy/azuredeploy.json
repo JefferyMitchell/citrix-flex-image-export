@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.48.1.52935",
-      "templateHash": "4579996416754278398"
+      "templateHash": "1624021566707760645"
     }
   },
   "parameters": {
@@ -70,7 +70,7 @@
     }
   },
   "variables": {
-    "$fxv#0": "#!/bin/bash\nset -euo pipefail\n\nGALLERY_RG=\"${GALLERY_RESOURCE_GROUP}\"\nGALLERY_NAME=\"${GALLERY_NAME}\"\nIMAGE_DEF=\"${IMAGE_DEFINITION}\"\nIMAGE_VER=\"${IMAGE_VERSION}\"\nDEST_STORAGE=\"${DEST_STORAGE_ACCOUNT}\"\nDEST_RG=\"${DEST_RESOURCE_GROUP}\"\nCONTAINER=\"${OUTPUT_CONTAINER}\"\nSAS_HOURS=\"${SAS_HOURS:-1}\"\n\necho \"=== Citrix Flex Image Export ===\"\necho \"Gallery  : ${GALLERY_NAME} / ${IMAGE_DEF} @ ${IMAGE_VER}\"\necho \"Dest     : ${DEST_STORAGE}/${CONTAINER}\"\n\n# ── Download AzCopy for Linux (pinned, verified) ──────────────────────────────\n# A fixed release, checked against its SHA-256 before it runs: it runs with this\n# identity's rights. To upgrade, change the version and the hash together\n# (the hash is on the release page: Azure/azure-storage-azcopy, asset digest).\nAZCOPY_VERSION=\"10.32.8\"\nAZCOPY_SHA256=\"a95277dbc265912cefdddbaf251aa99ec648cb18ba657e8788066357a9022dc3\"\necho \"\"\necho \"Downloading AzCopy ${AZCOPY_VERSION}...\"\nwget -qO /tmp/azcopy.tar.gz \"https://github.com/Azure/azure-storage-azcopy/releases/download/v${AZCOPY_VERSION}/azcopy_linux_amd64_${AZCOPY_VERSION}.tar.gz\"\nif ! echo \"${AZCOPY_SHA256}  /tmp/azcopy.tar.gz\" | sha256sum -c - >/dev/null; then\n    echo \"ERROR: AzCopy download doesn't match the expected SHA-256; not running it.\" >&2\n    exit 1\nfi\ntar -xzf /tmp/azcopy.tar.gz -C /tmp\nAZCOPY=$(find /tmp -name \"azcopy\" -type f | head -1)\nchmod +x \"$AZCOPY\"\nexport AZCOPY_AUTO_LOGIN_TYPE=MSI    # Destination auth via managed identity\necho \"  AzCopy ready.\"\n\n# ── Detect gallery location and security type ──────────────────────────────────\necho \"\"\necho \"Verifying gallery image version...\"\nSUBSCRIPTION_ID=$(az account show --query id -o tsv)\n\nVERSION_STATE=$(az sig image-version show \\\n    --resource-group \"$GALLERY_RG\" \\\n    --gallery-name \"$GALLERY_NAME\" \\\n    --gallery-image-definition \"$IMAGE_DEF\" \\\n    --gallery-image-version \"$IMAGE_VER\" \\\n    --query \"provisioningState\" -o tsv)\n\nif [ \"$VERSION_STATE\" != \"Succeeded\" ]; then\n    echo \"ERROR: Image version is not in Succeeded state: ${VERSION_STATE}\" >&2\n    exit 1\nfi\n\nGALLERY_LOCATION=$(az sig show \\\n    --resource-group \"$GALLERY_RG\" \\\n    --gallery-name \"$GALLERY_NAME\" \\\n    --query \"location\" -o tsv)\n\nSECURITY_TYPE=$(az sig image-definition show \\\n    --resource-group \"$GALLERY_RG\" \\\n    --gallery-name \"$GALLERY_NAME\" \\\n    --gallery-image-definition \"$IMAGE_DEF\" \\\n    --query \"features[?name=='SecurityType'].value | [0]\" -o tsv 2>/dev/null || echo \"\")\n\nIS_TRUSTED_LAUNCH=false\nif [ \"$SECURITY_TYPE\" = \"TrustedLaunch\" ]; then\n    IS_TRUSTED_LAUNCH=true\nfi\n\necho \"  Provisioning state : ${VERSION_STATE}\"\necho \"  Gallery location   : ${GALLERY_LOCATION}\"\necho \"  Security type      : ${SECURITY_TYPE:-Standard Gen2}\"\n\n# ── Create temporary managed disk ─────────────────────────────────────────────\nGALLERY_VERSION_ID=\"/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${GALLERY_RG}/providers/Microsoft.Compute/galleries/${GALLERY_NAME}/images/${IMAGE_DEF}/versions/${IMAGE_VER}\"\nDISK_NAME=\"export-temp-$(echo \"${IMAGE_DEF}\" | tr '[:upper:]' '[:lower:]')-$(echo \"${IMAGE_VER}\" | tr '.' '-')\"\nDISK_NAME=\"${DISK_NAME:0:80}\"\n\necho \"\"\necho \"Creating temporary managed disk...\"\necho \"  Disk name: ${DISK_NAME}  (deleted after copy)\"\n\nif [ \"$IS_TRUSTED_LAUNCH\" = true ]; then\n    echo \"  Passing --security-type TrustedLaunch (required for TrustedLaunch gallery images)\"\n    az disk create \\\n        --resource-group \"$GALLERY_RG\" \\\n        --name \"$DISK_NAME\" \\\n        --gallery-image-reference \"$GALLERY_VERSION_ID\" \\\n        --location \"$GALLERY_LOCATION\" \\\n        --sku Standard_LRS \\\n        --security-type TrustedLaunch \\\n        --output none\nelse\n    az disk create \\\n        --resource-group \"$GALLERY_RG\" \\\n        --name \"$DISK_NAME\" \\\n        --gallery-image-reference \"$GALLERY_VERSION_ID\" \\\n        --location \"$GALLERY_LOCATION\" \\\n        --sku Standard_LRS \\\n        --output none\nfi\necho \"  Disk created.\"\n\n# Ensure the disk is deleted even if the script fails\ncleanup() {\n    echo \"\"\n    echo \"Cleaning up temporary disk...\"\n    az disk revoke-access --resource-group \"$GALLERY_RG\" --name \"$DISK_NAME\" --output none 2>/dev/null || true\n    az disk delete --resource-group \"$GALLERY_RG\" --name \"$DISK_NAME\" --yes --output none 2>/dev/null || true\n    echo \"  Temporary disk deleted.\"\n}\ntrap cleanup EXIT\n\n# ── Grant disk access (OS SAS + VMGS SAS for TrustedLaunch) ───────────────────\necho \"\"\necho \"Granting disk access...\"\nSAS_JSON=$(az disk grant-access \\\n    --resource-group \"$GALLERY_RG\" \\\n    --name \"$DISK_NAME\" \\\n    --duration-in-seconds 86400 \\\n    --access-level Read \\\n    --secure-vm-guest-state-sas \\\n    -o json)\n\nSOURCE_SAS=$(echo \"$SAS_JSON\" | jq -r '.accessSAS // \"\"')\nVMGS_SAS=$(echo \"$SAS_JSON\"  | jq -r '.securityDataAccessSAS // \"\"')\n\nif [ -z \"$SOURCE_SAS\" ]; then\n    echo \"ERROR: OS disk SAS not returned by az disk grant-access\" >&2\n    exit 1\nfi\necho \"  OS SAS obtained.\"\nif [ -n \"$VMGS_SAS\" ]; then\n    echo \"  VMGS SAS obtained — TrustedLaunch confirmed.\"\nelse\n    echo \"  VMGS SAS not returned — image does not have VM guest state.\"\n    echo \"  Proceeding with OS disk only. Set secure_boot_enabled = false in Citrix portal.\"\nfi\n\n# ── AzCopy to destination blob storage ────────────────────────────────────────\n# Destination auth uses MSI (AZCOPY_AUTO_LOGIN_TYPE=MSI set above)\nSAFE_NAME=\"${IMAGE_DEF}-$(echo \"${IMAGE_VER}\" | tr '.' '-')\"\nOS_BLOB=\"${SAFE_NAME}.vhd\"\nOS_DEST=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${OS_BLOB}\"\n\necho \"\"\necho \"Copying OS disk VHD to blob storage...\"\n\"$AZCOPY\" copy \"$SOURCE_SAS\" \"$OS_DEST\" --blob-type PageBlob\n\nVMGS_BLOB=\"\"\nif [ -n \"$VMGS_SAS\" ]; then\n    VMGS_BLOB=\"${SAFE_NAME}-vmgs.vhd\"\n    VMGS_DEST=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${VMGS_BLOB}\"\n    echo \"\"\n    echo \"Copying VMGS blob...\"\n    \"$AZCOPY\" copy \"$VMGS_SAS\" \"$VMGS_DEST\" --blob-type PageBlob\nfi\n\n# cleanup trap runs here (revokes access + deletes disk)\n\n# ── Generate read SAS tokens (user delegation — no account key needed) ─────────\necho \"\"\necho \"Generating read SAS tokens (${SAS_HOURS}-hour expiry)...\"\n\n# User delegation SAS requires Storage Blob Delegator role on the storage account\nEXPIRY=$(date -u -d \"+${SAS_HOURS} hours\" '+%Y-%m-%dT%H:%MZ')\n\naz account set --subscription \"$SUBSCRIPTION_ID\" 2>/dev/null\n\nVHD_SAS_TOKEN=$(az storage blob generate-sas \\\n    --account-name \"$DEST_STORAGE\" \\\n    --container-name \"$CONTAINER\" \\\n    --name \"$OS_BLOB\" \\\n    --permissions r \\\n    --expiry \"$EXPIRY\" \\\n    --auth-mode login \\\n    --as-user \\\n    --https-only \\\n    -o tsv)\nVHD_URI=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${OS_BLOB}?${VHD_SAS_TOKEN}\"\n\nGUEST_DISK_URI=\"\"\nSECURE_BOOT=\"false\"\nVTPM=\"false\"\nif [ -n \"$VMGS_BLOB\" ]; then\n    VMGS_SAS_TOKEN=$(az storage blob generate-sas \\\n        --account-name \"$DEST_STORAGE\" \\\n        --container-name \"$CONTAINER\" \\\n        --name \"$VMGS_BLOB\" \\\n        --permissions r \\\n        --expiry \"$EXPIRY\" \\\n        --auth-mode login \\\n        --as-user \\\n        --https-only \\\n        -o tsv)\n    GUEST_DISK_URI=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${VMGS_BLOB}?${VMGS_SAS_TOKEN}\"\n    SECURE_BOOT=\"true\"\n    VTPM=\"true\"\nfi\n\necho \"\"\necho \"=== Export complete ===\"\necho \"vhd_uri        : ${VHD_URI}\"\n[ -n \"$GUEST_DISK_URI\" ] && echo \"guest_disk_uri : ${GUEST_DISK_URI}\"\necho \"SAS expires    : ${EXPIRY} UTC\"\n\n# ── Write deployment outputs ───────────────────────────────────────────────────\nOUTPUT_FILE=\"$AZ_SCRIPTS_OUTPUT_PATH\"\njq -n \\\n    --arg vhdUri        \"$VHD_URI\" \\\n    --arg guestDiskUri  \"$GUEST_DISK_URI\" \\\n    --arg secureBoot    \"$SECURE_BOOT\" \\\n    --arg vtpm          \"$VTPM\" \\\n    --arg sasExpiry     \"${EXPIRY} UTC\" \\\n    '{\n        vhdUri:           $vhdUri,\n        guestDiskUri:     $guestDiskUri,\n        secureBootEnabled: $secureBoot,\n        vTPMEnabled:      $vtpm,\n        sasExpiry:        $sasExpiry\n    }' > \"$OUTPUT_FILE\"\n\necho \"Outputs written.\"\n",
+    "$fxv#0": "#!/bin/bash\nset -euo pipefail\n\nGALLERY_RG=\"${GALLERY_RESOURCE_GROUP}\"\nDISK_RG=\"${DISK_RESOURCE_GROUP}\"     # this deployment's resource group: the temporary disk lives here\nGALLERY_NAME=\"${GALLERY_NAME}\"\nIMAGE_DEF=\"${IMAGE_DEFINITION}\"\nIMAGE_VER=\"${IMAGE_VERSION}\"\nDEST_STORAGE=\"${DEST_STORAGE_ACCOUNT}\"\nDEST_RG=\"${DEST_RESOURCE_GROUP}\"\nCONTAINER=\"${OUTPUT_CONTAINER}\"\nSAS_HOURS=\"${SAS_HOURS:-1}\"\n\necho \"=== Citrix Flex Image Export ===\"\necho \"Gallery  : ${GALLERY_NAME} / ${IMAGE_DEF} @ ${IMAGE_VER}\"\necho \"Dest     : ${DEST_STORAGE}/${CONTAINER}\"\n\n# ── Download AzCopy for Linux (pinned, verified) ──────────────────────────────\n# A fixed release, checked against its SHA-256 before it runs: it runs with this\n# identity's rights. To upgrade, change the version and the hash together\n# (the hash is on the release page: Azure/azure-storage-azcopy, asset digest).\nAZCOPY_VERSION=\"10.32.8\"\nAZCOPY_SHA256=\"a95277dbc265912cefdddbaf251aa99ec648cb18ba657e8788066357a9022dc3\"\necho \"\"\necho \"Downloading AzCopy ${AZCOPY_VERSION}...\"\nwget -qO /tmp/azcopy.tar.gz \"https://github.com/Azure/azure-storage-azcopy/releases/download/v${AZCOPY_VERSION}/azcopy_linux_amd64_${AZCOPY_VERSION}.tar.gz\"\nif ! echo \"${AZCOPY_SHA256}  /tmp/azcopy.tar.gz\" | sha256sum -c - >/dev/null; then\n    echo \"ERROR: AzCopy download doesn't match the expected SHA-256; not running it.\" >&2\n    exit 1\nfi\ntar -xzf /tmp/azcopy.tar.gz -C /tmp\nAZCOPY=$(find /tmp -name \"azcopy\" -type f | head -1)\nchmod +x \"$AZCOPY\"\nexport AZCOPY_AUTO_LOGIN_TYPE=MSI    # Destination auth via managed identity\necho \"  AzCopy ready.\"\n\n# ── Detect gallery location and security type ──────────────────────────────────\necho \"\"\necho \"Verifying gallery image version...\"\nSUBSCRIPTION_ID=$(az account show --query id -o tsv)\n\nVERSION_STATE=$(az sig image-version show \\\n    --resource-group \"$GALLERY_RG\" \\\n    --gallery-name \"$GALLERY_NAME\" \\\n    --gallery-image-definition \"$IMAGE_DEF\" \\\n    --gallery-image-version \"$IMAGE_VER\" \\\n    --query \"provisioningState\" -o tsv)\n\nif [ \"$VERSION_STATE\" != \"Succeeded\" ]; then\n    echo \"ERROR: Image version is not in Succeeded state: ${VERSION_STATE}\" >&2\n    exit 1\nfi\n\nGALLERY_LOCATION=$(az sig show \\\n    --resource-group \"$GALLERY_RG\" \\\n    --gallery-name \"$GALLERY_NAME\" \\\n    --query \"location\" -o tsv)\n\nSECURITY_TYPE=$(az sig image-definition show \\\n    --resource-group \"$GALLERY_RG\" \\\n    --gallery-name \"$GALLERY_NAME\" \\\n    --gallery-image-definition \"$IMAGE_DEF\" \\\n    --query \"features[?name=='SecurityType'].value | [0]\" -o tsv 2>/dev/null || echo \"\")\n\nIS_TRUSTED_LAUNCH=false\nif [ \"$SECURITY_TYPE\" = \"TrustedLaunch\" ]; then\n    IS_TRUSTED_LAUNCH=true\nfi\n\necho \"  Provisioning state : ${VERSION_STATE}\"\necho \"  Gallery location   : ${GALLERY_LOCATION}\"\necho \"  Security type      : ${SECURITY_TYPE:-Standard Gen2}\"\n\n# ── Create temporary managed disk ─────────────────────────────────────────────\nGALLERY_VERSION_ID=\"/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${GALLERY_RG}/providers/Microsoft.Compute/galleries/${GALLERY_NAME}/images/${IMAGE_DEF}/versions/${IMAGE_VER}\"\nDISK_NAME=\"export-temp-$(echo \"${IMAGE_DEF}\" | tr '[:upper:]' '[:lower:]')-$(echo \"${IMAGE_VER}\" | tr '.' '-')\"\nDISK_NAME=\"${DISK_NAME:0:80}\"\n\necho \"\"\necho \"Creating temporary managed disk...\"\necho \"  Disk name: ${DISK_NAME}  (deleted after copy)\"\n\nif [ \"$IS_TRUSTED_LAUNCH\" = true ]; then\n    echo \"  Passing --security-type TrustedLaunch (required for TrustedLaunch gallery images)\"\n    az disk create \\\n        --resource-group \"$DISK_RG\" \\\n        --name \"$DISK_NAME\" \\\n        --gallery-image-reference \"$GALLERY_VERSION_ID\" \\\n        --location \"$GALLERY_LOCATION\" \\\n        --sku Standard_LRS \\\n        --security-type TrustedLaunch \\\n        --output none\nelse\n    az disk create \\\n        --resource-group \"$DISK_RG\" \\\n        --name \"$DISK_NAME\" \\\n        --gallery-image-reference \"$GALLERY_VERSION_ID\" \\\n        --location \"$GALLERY_LOCATION\" \\\n        --sku Standard_LRS \\\n        --output none\nfi\necho \"  Disk created.\"\n\n# Ensure the disk is deleted even if the script fails\ncleanup() {\n    echo \"\"\n    echo \"Cleaning up temporary disk...\"\n    az disk revoke-access --resource-group \"$DISK_RG\" --name \"$DISK_NAME\" --output none 2>/dev/null || true\n    az disk delete --resource-group \"$DISK_RG\" --name \"$DISK_NAME\" --yes --output none 2>/dev/null || true\n    echo \"  Temporary disk deleted.\"\n}\ntrap cleanup EXIT\n\n# ── Grant disk access (OS SAS + VMGS SAS for TrustedLaunch) ───────────────────\necho \"\"\necho \"Granting disk access...\"\nSAS_JSON=$(az disk grant-access \\\n    --resource-group \"$DISK_RG\" \\\n    --name \"$DISK_NAME\" \\\n    --duration-in-seconds 86400 \\\n    --access-level Read \\\n    --secure-vm-guest-state-sas \\\n    -o json)\n\nSOURCE_SAS=$(echo \"$SAS_JSON\" | jq -r '.accessSAS // \"\"')\nVMGS_SAS=$(echo \"$SAS_JSON\"  | jq -r '.securityDataAccessSAS // \"\"')\n\nif [ -z \"$SOURCE_SAS\" ]; then\n    echo \"ERROR: OS disk SAS not returned by az disk grant-access\" >&2\n    exit 1\nfi\necho \"  OS SAS obtained.\"\nif [ -n \"$VMGS_SAS\" ]; then\n    echo \"  VMGS SAS obtained — TrustedLaunch confirmed.\"\nelse\n    echo \"  VMGS SAS not returned — image does not have VM guest state.\"\n    echo \"  Proceeding with OS disk only. Set secure_boot_enabled = false in Citrix portal.\"\nfi\n\n# ── AzCopy to destination blob storage ────────────────────────────────────────\n# Destination auth uses MSI (AZCOPY_AUTO_LOGIN_TYPE=MSI set above)\nSAFE_NAME=\"${IMAGE_DEF}-$(echo \"${IMAGE_VER}\" | tr '.' '-')\"\nOS_BLOB=\"${SAFE_NAME}.vhd\"\nOS_DEST=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${OS_BLOB}\"\n\necho \"\"\necho \"Copying OS disk VHD to blob storage...\"\n\"$AZCOPY\" copy \"$SOURCE_SAS\" \"$OS_DEST\" --blob-type PageBlob\n\nVMGS_BLOB=\"\"\nif [ -n \"$VMGS_SAS\" ]; then\n    VMGS_BLOB=\"${SAFE_NAME}-vmgs.vhd\"\n    VMGS_DEST=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${VMGS_BLOB}\"\n    echo \"\"\n    echo \"Copying VMGS blob...\"\n    \"$AZCOPY\" copy \"$VMGS_SAS\" \"$VMGS_DEST\" --blob-type PageBlob\nfi\n\n# cleanup trap runs here (revokes access + deletes disk)\n\n# ── Generate read SAS tokens (user delegation — no account key needed) ─────────\necho \"\"\necho \"Generating read SAS tokens (${SAS_HOURS}-hour expiry)...\"\n\n# User delegation SAS requires Storage Blob Delegator role on the storage account\nEXPIRY=$(date -u -d \"+${SAS_HOURS} hours\" '+%Y-%m-%dT%H:%MZ')\n\naz account set --subscription \"$SUBSCRIPTION_ID\" 2>/dev/null\n\nVHD_SAS_TOKEN=$(az storage blob generate-sas \\\n    --account-name \"$DEST_STORAGE\" \\\n    --container-name \"$CONTAINER\" \\\n    --name \"$OS_BLOB\" \\\n    --permissions r \\\n    --expiry \"$EXPIRY\" \\\n    --auth-mode login \\\n    --as-user \\\n    --https-only \\\n    -o tsv)\nVHD_URI=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${OS_BLOB}?${VHD_SAS_TOKEN}\"\n\nGUEST_DISK_URI=\"\"\nSECURE_BOOT=\"false\"\nVTPM=\"false\"\nif [ -n \"$VMGS_BLOB\" ]; then\n    VMGS_SAS_TOKEN=$(az storage blob generate-sas \\\n        --account-name \"$DEST_STORAGE\" \\\n        --container-name \"$CONTAINER\" \\\n        --name \"$VMGS_BLOB\" \\\n        --permissions r \\\n        --expiry \"$EXPIRY\" \\\n        --auth-mode login \\\n        --as-user \\\n        --https-only \\\n        -o tsv)\n    GUEST_DISK_URI=\"https://${DEST_STORAGE}.blob.core.windows.net/${CONTAINER}/${VMGS_BLOB}?${VMGS_SAS_TOKEN}\"\n    SECURE_BOOT=\"true\"\n    VTPM=\"true\"\nfi\n\necho \"\"\necho \"=== Export complete ===\"\necho \"vhd_uri        : ${VHD_URI}\"\n[ -n \"$GUEST_DISK_URI\" ] && echo \"guest_disk_uri : ${GUEST_DISK_URI}\"\necho \"SAS expires    : ${EXPIRY} UTC\"\n\n# ── Write deployment outputs ───────────────────────────────────────────────────\nOUTPUT_FILE=\"$AZ_SCRIPTS_OUTPUT_PATH\"\njq -n \\\n    --arg vhdUri        \"$VHD_URI\" \\\n    --arg guestDiskUri  \"$GUEST_DISK_URI\" \\\n    --arg secureBoot    \"$SECURE_BOOT\" \\\n    --arg vtpm          \"$VTPM\" \\\n    --arg sasExpiry     \"${EXPIRY} UTC\" \\\n    '{\n        vhdUri:           $vhdUri,\n        guestDiskUri:     $guestDiskUri,\n        secureBootEnabled: $secureBoot,\n        vTPMEnabled:      $vtpm,\n        sasExpiry:        $sasExpiry\n    }' > \"$OUTPUT_FILE\"\n\necho \"Outputs written.\"\n",
     "scriptName": "export-citrix-flex-image",
     "identityName": "[format('id-{0}', variables('scriptName'))]",
     "contributorRoleId": "b24988ac-6180-42a0-ab88-20f7382dd24c"
@@ -81,6 +81,19 @@
       "apiVersion": "2023-01-31",
       "name": "[variables('identityName')]",
       "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), variables('contributorRoleId'), resourceGroup().id)]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('contributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+      ]
     },
     {
       "type": "Microsoft.Resources/deploymentScripts",
@@ -103,6 +116,10 @@
           {
             "name": "GALLERY_RESOURCE_GROUP",
             "value": "[parameters('galleryResourceGroup')]"
+          },
+          {
+            "name": "DISK_RESOURCE_GROUP",
+            "value": "[resourceGroup().name]"
           },
           {
             "name": "GALLERY_NAME",
@@ -136,7 +153,8 @@
         "scriptContent": "[variables('$fxv#0')]"
       },
       "dependsOn": [
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('galleryResourceGroup')), 'Microsoft.Resources/deployments', 'gallery-rg-contributor')]",
+        "[resourceId('Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), variables('contributorRoleId'), resourceGroup().id))]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('galleryResourceGroup')), 'Microsoft.Resources/deployments', 'gallery-reader')]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('destStorageAccountResourceGroup')), 'Microsoft.Resources/deployments', 'storage-blob-roles')]"
       ]
@@ -144,7 +162,7 @@
     {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
-      "name": "gallery-rg-contributor",
+      "name": "gallery-reader",
       "resourceGroup": "[parameters('galleryResourceGroup')]",
       "properties": {
         "expressionEvaluationOptions": {
@@ -155,8 +173,8 @@
           "principalId": {
             "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]"
           },
-          "roleDefinitionId": {
-            "value": "[variables('contributorRoleId')]"
+          "galleryName": {
+            "value": "[parameters('galleryName')]"
           }
         },
         "template": {
@@ -166,24 +184,28 @@
             "_generator": {
               "name": "bicep",
               "version": "0.48.1.52935",
-              "templateHash": "9997212730195600110"
+              "templateHash": "15672471385468920235"
             }
           },
           "parameters": {
             "principalId": {
               "type": "string"
             },
-            "roleDefinitionId": {
+            "galleryName": {
               "type": "string"
             }
+          },
+          "variables": {
+            "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7"
           },
           "resources": [
             {
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
-              "name": "[guid(parameters('principalId'), parameters('roleDefinitionId'), resourceGroup().id)]",
+              "scope": "[resourceId('Microsoft.Compute/galleries', parameters('galleryName'))]",
+              "name": "[guid(parameters('principalId'), variables('readerRoleId'), resourceId('Microsoft.Compute/galleries', parameters('galleryName')))]",
               "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', parameters('roleDefinitionId'))]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
                 "principalId": "[parameters('principalId')]",
                 "principalType": "ServicePrincipal"
               }

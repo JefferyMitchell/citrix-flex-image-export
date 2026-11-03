@@ -15,13 +15,13 @@ Under the hood, the deployment:
 1. Creates a short-lived managed identity (no stored credentials)
 2. Assigns it the minimum required roles on your gallery and storage account
 3. Runs an Azure CLI script inside a temporary container that:
-   - Creates a temporary managed disk from your gallery image version
+   - Creates a temporary managed disk from your gallery image version, in the deployment's own resource group
    - Calls `az disk grant-access --secure-vm-guest-state-sas` to get the OS and VMGS SAS URLs
    - Copies both blobs to your destination storage account via AzCopy
    - Deletes the temporary disk
    - Generates time-limited read SAS tokens on the output blobs
 4. Writes the SAS URIs to the deployment outputs
-5. Cleans up the container and managed identity on success
+5. Removes the script's container and its storage on success. The managed identity and its role assignments stay until you remove them: see [Cleaning up](#cleaning-up)
 
 ---
 
@@ -32,7 +32,7 @@ Before clicking Deploy:
 1. **An Azure Compute Gallery image version** — image definition security type must be `TrustedLaunch` for VMGS export; standard Gen2 images are also supported (VMGS is skipped)
 2. **A destination storage account** with a container named `vhd-output` (or a name of your choice)  
    - Create a container if needed: **Storage account → Containers → + Container**
-3. **A resource group to deploy into** — can be new or existing; this is just for the temporary deployment resources
+3. **A new, dedicated resource group to deploy into.** The export identity becomes Contributor on it, and the temporary disk is created there. Delete it after the export (see [Cleaning up](#cleaning-up)).
 
 ---
 
@@ -106,11 +106,30 @@ The deployment creates a **User-Assigned Managed Identity** and assigns it the m
 
 | Role | Scope | Purpose |
 |------|-------|---------|
-| `Contributor` | Gallery resource group | Create/delete the temporary managed disk |
+| `Contributor` | The resource group you deploy into | Create, export and delete the temporary managed disk |
+| `Reader` | The gallery | Read the image version and its definition, and create a disk from it |
 | `Storage Blob Data Contributor` | Destination storage account | Write VHD and VMGS blobs via AzCopy |
 | `Storage Blob Delegator` | Destination storage account | Generate user-delegation SAS tokens (no account key) |
 
-The managed identity and all role assignments are removed when you delete the deployment resource group. The exported blobs and SAS URIs in your storage account are not affected.
+The identity has no write access to the gallery: the temporary disk is created in the resource group you deploy into, in the gallery's region. Because the identity is Contributor on that resource group, deploy into a **dedicated** resource group, not one holding anything else.
+
+### Cleaning up
+
+The identity and its role assignments outlive the export. While the identity exists, anyone who can assign it to a resource can act with its roles. Remove it when you're done, in this order:
+
+```bash
+RG=<the resource group you deployed into>
+PRINCIPAL_ID=$(az identity show -g "$RG" -n id-export-citrix-flex-image --query principalId -o tsv)
+
+# 1. The role assignments on the gallery and the storage account. Deleting the resource group
+#    alone leaves these behind as "Identity not found" entries.
+az role assignment list --all --assignee "$PRINCIPAL_ID" --query "[].id" -o tsv | xargs -r az role assignment delete --ids
+
+# 2. The identity, and anything else in the deployment resource group
+az group delete -n "$RG" --yes
+```
+
+The exported blobs and SAS URIs in your storage account are not affected. To renew the SAS tokens later, deploy again.
 
 ---
 
