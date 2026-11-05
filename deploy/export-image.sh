@@ -14,10 +14,19 @@ echo "=== Citrix Flex Image Export ==="
 echo "Gallery  : ${GALLERY_NAME} / ${IMAGE_DEF} @ ${IMAGE_VER}"
 echo "Dest     : ${DEST_STORAGE}/${CONTAINER}"
 
-# ── Download AzCopy for Linux ──────────────────────────────────────────────────
+# ── Download AzCopy for Linux (pinned, verified) ──────────────────────────────
+# A fixed release, checked against its SHA-256 before it runs: it runs with this
+# identity's rights. To upgrade, change the version and the hash together
+# (the hash is on the release page: Azure/azure-storage-azcopy, asset digest).
+AZCOPY_VERSION="10.32.8"
+AZCOPY_SHA256="a95277dbc265912cefdddbaf251aa99ec648cb18ba657e8788066357a9022dc3"
 echo ""
-echo "Downloading AzCopy v10..."
-wget -qO /tmp/azcopy.tar.gz https://aka.ms/downloadazcopy-v10-linux
+echo "Downloading AzCopy ${AZCOPY_VERSION}..."
+wget -qO /tmp/azcopy.tar.gz "https://github.com/Azure/azure-storage-azcopy/releases/download/v${AZCOPY_VERSION}/azcopy_linux_amd64_${AZCOPY_VERSION}.tar.gz"
+if ! echo "${AZCOPY_SHA256}  /tmp/azcopy.tar.gz" | sha256sum -c - >/dev/null; then
+    echo "ERROR: AzCopy download doesn't match the expected SHA-256; not running it." >&2
+    exit 1
+fi
 tar -xzf /tmp/azcopy.tar.gz -C /tmp
 AZCOPY=$(find /tmp -name "azcopy" -type f | head -1)
 chmod +x "$AZCOPY"
