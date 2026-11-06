@@ -4,7 +4,8 @@
 //
 // What this deploys:
 //   - User-assigned managed identity (runs the export with no stored credentials)
-//   - Role assignments: Contributor on gallery RG + Storage Blob roles on dest storage
+//   - Role assignments: Contributor on this deployment's resource group (the temporary
+//     disk lives here), Reader on the gallery, Storage Blob roles on the dest storage
 //   - Azure CLI deployment script that performs the actual export (~10-15 min)
 //
 // Outputs:
@@ -62,15 +63,29 @@ resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
   location: location
 }
 
-// ── Role: Contributor on gallery resource group ────────────────────────────────
-// Required to create/delete the temporary managed disk used during export.
+// ── Role: Contributor on this deployment's resource group ──────────────────────
+// The temporary managed disk is created here, not in the gallery's resource group,
+// so the identity needs no write access to the gallery. Deploy into a dedicated
+// resource group: the identity can change anything in it.
 
-module galleryRgContributor 'modules/rg-contributor.bicep' = {
-  name: 'gallery-rg-contributor'
+resource deploymentRgContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(managedIdentity.id, contributorRoleId, resourceGroup().id)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
+    principalId: managedIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Role: Reader on the gallery ────────────────────────────────────────────────
+// Enough to read the image version and its definition, and to create a disk from it.
+
+module galleryReader 'modules/gallery-reader.bicep' = {
+  name: 'gallery-reader'
   scope: resourceGroup(galleryResourceGroup)
   params: {
     principalId: managedIdentity.properties.principalId
-    roleDefinitionId: contributorRoleId
+    galleryName: galleryName
   }
 }
 
@@ -109,6 +124,7 @@ resource exportScript 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
     cleanupPreference: 'OnSuccess'
     environmentVariables: [
       { name: 'GALLERY_RESOURCE_GROUP', value: galleryResourceGroup }
+      { name: 'DISK_RESOURCE_GROUP',    value: resourceGroup().name }
       { name: 'GALLERY_NAME',           value: galleryName }
       { name: 'IMAGE_DEFINITION',       value: imageDefinition }
       { name: 'IMAGE_VERSION',          value: imageVersion }
@@ -120,7 +136,8 @@ resource exportScript 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
     scriptContent: loadTextContent('export-image.sh')
   }
   dependsOn: [
-    galleryRgContributor
+    deploymentRgContributor
+    galleryReader
     storageRoles
   ]
 }
