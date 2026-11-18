@@ -2,6 +2,7 @@
 set -euo pipefail
 
 GALLERY_RG="${GALLERY_RESOURCE_GROUP}"
+DISK_RG="${DISK_RESOURCE_GROUP}"     # this deployment's resource group: the temporary disk lives here
 GALLERY_NAME="${GALLERY_NAME}"
 IMAGE_DEF="${IMAGE_DEFINITION}"
 IMAGE_VER="${IMAGE_VERSION}"
@@ -82,7 +83,7 @@ echo "  Disk name: ${DISK_NAME}  (deleted after copy)"
 if [ "$IS_TRUSTED_LAUNCH" = true ]; then
     echo "  Passing --security-type TrustedLaunch (required for TrustedLaunch gallery images)"
     az disk create \
-        --resource-group "$GALLERY_RG" \
+        --resource-group "$DISK_RG" \
         --name "$DISK_NAME" \
         --gallery-image-reference "$GALLERY_VERSION_ID" \
         --location "$GALLERY_LOCATION" \
@@ -91,7 +92,7 @@ if [ "$IS_TRUSTED_LAUNCH" = true ]; then
         --output none
 else
     az disk create \
-        --resource-group "$GALLERY_RG" \
+        --resource-group "$DISK_RG" \
         --name "$DISK_NAME" \
         --gallery-image-reference "$GALLERY_VERSION_ID" \
         --location "$GALLERY_LOCATION" \
@@ -104,8 +105,8 @@ echo "  Disk created."
 cleanup() {
     echo ""
     echo "Cleaning up temporary disk..."
-    az disk revoke-access --resource-group "$GALLERY_RG" --name "$DISK_NAME" --output none 2>/dev/null || true
-    az disk delete --resource-group "$GALLERY_RG" --name "$DISK_NAME" --yes --output none 2>/dev/null || true
+    az disk revoke-access --resource-group "$DISK_RG" --name "$DISK_NAME" --output none 2>/dev/null || true
+    az disk delete --resource-group "$DISK_RG" --name "$DISK_NAME" --yes --output none 2>/dev/null || true
     echo "  Temporary disk deleted."
 }
 trap cleanup EXIT
@@ -114,7 +115,7 @@ trap cleanup EXIT
 echo ""
 echo "Granting disk access..."
 SAS_JSON=$(az disk grant-access \
-    --resource-group "$GALLERY_RG" \
+    --resource-group "$DISK_RG" \
     --name "$DISK_NAME" \
     --duration-in-seconds 86400 \
     --access-level Read \
