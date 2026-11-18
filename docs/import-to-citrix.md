@@ -72,7 +72,9 @@ Catalog creation provisions the Azure VMs, installs Citrix agents, and makes mac
 
 ## SAS token expiry
 
-The SAS tokens embedded in `vhdUri` and `guestDiskUri` expire **1 hour** after the deployment completes. Complete the Citrix Cloud import wizard before then.
+The SAS tokens embedded in `vhdUri` and `guestDiskUri` expire **1 hour** after the deployment completes. The lifetime is short on purpose: anyone who can read the deployment's outputs can read the image until the tokens expire.
+
+**Start the import as soon as the deployment finishes.** An import takes about 15–25 minutes from submit to `Ready`, and Citrix reads the blobs while it runs. If more than about 30 minutes have passed since the deployment completed, renew the tokens first.
 
 To renew: re-run the [citrix-flex-image-export deployment](https://github.com/JefferyMitchell/citrix-flex-image-export) with the same parameters — fresh 1-hour SAS URIs will be in the Outputs tab.
 
@@ -87,3 +89,31 @@ To renew: re-run the [citrix-flex-image-export deployment](https://github.com/Je
 | "Master image could not be verified" | Machine Generation mismatch | Ensure **Generation 2** is selected; the image is Gen2 |
 | "Master image must be a Windows 10 Multi-Session OS" | Windows Server image used with Single-session catalog | Change catalog type to Multi-session OS |
 | Catalog stuck in provisioning | VMs failed to domain-join or install agent | Check network connectivity; ensure on-premises network connection is healthy |
+
+---
+
+## Appendix: import with the API
+
+For a scripted pipeline, import through the Quick Deploy API instead of the console. [flex-image-builder](https://github.com/JefferyMitchell/flex-image-builder/blob/main/docs/custom-images.md#import-an-image) has a script that does all of this, `06-import-to-citrix.ps1`, and explains how to find the site ID.
+
+1. **Get a token** with your API client: `POST https://api.cloud.com/cctrustoauth2/root/tokens/clients` (client-credentials grant). Send it as `Authorization: CwsAuth Bearer=<token>`, not as a plain `Bearer` header, along with `Citrix-CustomerId: <customerId>`.
+2. **Import:** `POST https://api.cloud.com/catalogservice/{customerId}/{siteId}/images/$import`
+
+   ```json
+   {
+     "name": "WinServer2025DC-1.0.0",
+     "vhdUri": "<vhdUri output>",
+     "vhdEncryptionUri": "<guestDiskUri output, Trusted Launch only>",
+     "osPlatform": "Windows",
+     "region": "eastus",
+     "hyperVGen": "V2",
+     "vtpmEnabled": true,
+     "secureBootEnabled": true
+   }
+   ```
+
+   For an image without Trusted Launch, leave out `vhdEncryptionUri` and set `secureBootEnabled` to `false`.
+3. **Wait** while the image goes `Pending` → `Importing` → `Ready`, usually 15–25 minutes.
+4. **Read the image back** and check `hyperVGen`, `vtpmEnabled` and `secureBootEnabled`. The API drops field names it doesn't know without an error (`machineGeneration` instead of `hyperVGen` imports a Gen1 image), so the read-back is the only proof.
+
+> **Include the site ID.** `POST /catalogservice/{customerId}/images`, without `{siteId}`, looks right but is the bring-your-own-subscription route. Without a linked subscription, its image stays `Pending` forever; the only error ("Authority was not found") is on the image's detail GET. Delete it with `DELETE .../catalogservice/{customerId}/images/{imageId}?async=true` and `Content-Type: application/json`, which the call needs even with no body.

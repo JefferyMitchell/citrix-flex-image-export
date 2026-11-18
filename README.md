@@ -70,7 +70,7 @@ When the deployment completes (~10–15 minutes), open the deployment and click 
 | `vTPMEnabled` | `true` for Trusted Launch images, `false` otherwise |
 | `sasExpiry` | When the SAS tokens expire (1 hour from deployment) |
 
-> **SAS tokens expire after 1 hour.** Complete the Citrix Cloud import before then. If the tokens expire, re-run this deployment to generate fresh SAS tokens.
+> **SAS tokens expire after 1 hour, so start the import as soon as the deployment finishes.** An import takes about 15–25 minutes and reads the blobs while it runs. If more than about 30 minutes have passed, re-run this deployment first for fresh tokens. The lifetime is short on purpose: anyone who can read the deployment's outputs can read the image until the tokens expire.
 
 ---
 
@@ -88,7 +88,7 @@ After the deployment outputs are ready:
 6. Set **Machine Generation** to **Generation 2** (required for Trusted Launch)
 7. Complete the catalog wizard
 
-See [docs/import-to-citrix.md](docs/import-to-citrix.md) for step-by-step screenshots.
+See [docs/import-to-citrix.md](docs/import-to-citrix.md) for step-by-step screenshots, and its appendix to import with the API instead.
 
 ---
 
