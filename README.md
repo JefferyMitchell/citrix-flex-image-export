@@ -125,3 +125,7 @@ The managed identity and all role assignments are removed when you delete the de
 ## Related
 
 - [flex-image-builder](https://github.com/JefferyMitchell/flex-image-builder) — Packer + Terraform pipeline for building and deploying Citrix Platform Flex custom images
+
+## License
+
+Apache License 2.0: see [LICENSE](LICENSE).
